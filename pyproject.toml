@@ -7,7 +7,7 @@ name = "ganjoor-poetry-bot"
 version = "0.1.0"
 description = "Local-first Persian poetry search core and Telegram bot"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = {text = "AGPL-3.0-or-later"}
 authors = [{name = "finarfin-ag"}]
 dependencies = []
