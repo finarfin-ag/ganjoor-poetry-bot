@@ -25,7 +25,11 @@ def _iter_poem_files(root: Path) -> Iterable[Path]:
             yield path
 
 
-def import_corpus(root: Path, conn: sqlite3.Connection) -> dict[str, int]:
+def import_corpus(
+    root: Path,
+    conn: sqlite3.Connection,
+    progress_every: int = 5000,
+) -> dict[str, int]:
     """Import the static `ganjoor-data` export into our normalized database."""
     manifest = load_json(root / "manifest.json")
     conn.execute(
@@ -84,6 +88,11 @@ def import_corpus(root: Path, conn: sqlite3.Connection) -> dict[str, int]:
         if parent_id is not None:
             conn.execute("UPDATE categories SET parent_id = ? WHERE id = ?", (parent_id, cat_id))
 
+    print(
+        f"Indexed metadata: {poet_count:,} poets, {category_count:,} categories",
+        flush=True,
+    )
+
     for poem_json in _iter_poem_files(root):
         poem = load_json(poem_json)
         poem_id_raw = _first(poem, "Id", "id")
@@ -141,6 +150,12 @@ def import_corpus(root: Path, conn: sqlite3.Connection) -> dict[str, int]:
                 (str(text), normalized, poem_id, order),
             )
             verse_count += 1
+
+        if progress_every > 0 and poem_count % progress_every == 0:
+            print(
+                f"Imported {poem_count:,} poems / {verse_count:,} verses...",
+                flush=True,
+            )
 
     conn.commit()
     return {
