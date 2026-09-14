@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -29,12 +30,30 @@ def import_corpus(
     root: Path,
     conn: sqlite3.Connection,
     progress_every: int = 5000,
+    commit_every: int = 1000,
 ) -> dict[str, int]:
-    """Import the static `ganjoor-data` export into our normalized database."""
+    """Import the static ``ganjoor-data`` export.
+
+    The original source text is preserved while normalized text is stored for
+    search. Long imports are committed in batches so an interrupted SSH session
+    cannot discard the entire run. A fresh build is still recommended after an
+    interruption; the partial database is retained only for diagnosis.
+    """
+    if progress_every < 0:
+        raise ValueError("progress_every must be >= 0")
+    if commit_every <= 0:
+        raise ValueError("commit_every must be > 0")
+
+    started = time.monotonic()
     manifest = load_json(root / "manifest.json")
+    expected_poems = int(manifest.get("PoemsCount", 0) or 0)
+
     conn.execute(
         "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)",
         ("manifest", json.dumps(manifest, ensure_ascii=False)),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata(key, value) VALUES ('build_status', 'importing')"
     )
     for source_key, dest_key in (
         ("SchemaVersion", "upstream_schema_version"),
@@ -51,7 +70,16 @@ def import_corpus(
     for poet_json in (root / "poets").glob("*/poet.json"):
         poet = load_json(poet_json)
         poet_id = int(_first(poet, "Id", "id"))
-        nickname = str(_first(poet, "Nickname", "nickname", "Name", "name", default=poet_json.parent.name))
+        nickname = str(
+            _first(
+                poet,
+                "Nickname",
+                "nickname",
+                "Name",
+                "name",
+                default=poet_json.parent.name,
+            )
+        )
         name = _first(poet, "Name", "name", "FullName", "fullName")
         description = _first(poet, "Description", "description", "Bio", "bio")
         rel = poet_json.relative_to(root).as_posix()
@@ -88,8 +116,12 @@ def import_corpus(
         if parent_id is not None:
             conn.execute("UPDATE categories SET parent_id = ? WHERE id = ?", (parent_id, cat_id))
 
+    # Persist metadata before the long poem import starts.
+    conn.commit()
+    target = f" / {expected_poems:,}" if expected_poems else ""
     print(
-        f"Indexed metadata: {poet_count:,} poets, {category_count:,} categories",
+        f"Indexed metadata: {poet_count:,} poets, {category_count:,} categories. "
+        f"Starting poem import{target}...",
         flush=True,
     )
 
@@ -104,9 +136,13 @@ def import_corpus(
 
         poem_id = int(poem_id_raw)
         category_id = int(category_id_raw)
-        cat_row = conn.execute("SELECT poet_id FROM categories WHERE id = ?", (category_id,)).fetchone()
+        cat_row = conn.execute(
+            "SELECT poet_id FROM categories WHERE id = ?", (category_id,)
+        ).fetchone()
         if cat_row is None:
-            raise ValueError(f"Poem {poem_id} references missing category {category_id}: {poem_json}")
+            raise ValueError(
+                f"Poem {poem_id} references missing category {category_id}: {poem_json}"
+            )
         poet_id = int(cat_row["poet_id"])
 
         title = str(_first(poem, "Title", "title", default=""))
@@ -124,7 +160,17 @@ def import_corpus(
 
         conn.execute(
             "INSERT OR REPLACE INTO poems(id, poet_id, category_id, title, title_normalized, metre_id, metre, rhyme, source_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (poem_id, poet_id, category_id, title, title_normalized, metre_id, metre, rhyme, rel),
+            (
+                poem_id,
+                poet_id,
+                category_id,
+                title,
+                title_normalized,
+                metre_id,
+                metre,
+                rhyme,
+                rel,
+            ),
         )
         conn.execute(
             "INSERT INTO poem_fts(title, title_normalized, poem_id) VALUES (?, ?, ?)",
@@ -136,14 +182,39 @@ def import_corpus(
             text = _first(verse, "Text", "text")
             if not text:
                 continue
-            order = int(_first(verse, "VOrder", "vOrder", "Order", "order", default=fallback_order))
-            position = _first(verse, "Position", "position", "VersePosition", "versePosition")
+            order = int(
+                _first(
+                    verse,
+                    "VOrder",
+                    "vOrder",
+                    "Order",
+                    "order",
+                    default=fallback_order,
+                )
+            )
+            position = _first(
+                verse, "Position", "position", "VersePosition", "versePosition"
+            )
             couplet_index = _first(verse, "CoupletIndex", "coupletIndex")
-            section_index = _first(verse, "SectionIndex1", "sectionIndex1", "SectionIndex", "sectionIndex")
+            section_index = _first(
+                verse,
+                "SectionIndex1",
+                "sectionIndex1",
+                "SectionIndex",
+                "sectionIndex",
+            )
             normalized = normalize_persian(str(text))
             conn.execute(
                 "INSERT OR REPLACE INTO verses(poem_id, verse_order, position, couplet_index, section_index, text, normalized_text) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (poem_id, order, position, couplet_index, section_index, str(text), normalized),
+                (
+                    poem_id,
+                    order,
+                    position,
+                    couplet_index,
+                    section_index,
+                    str(text),
+                    normalized,
+                ),
             )
             conn.execute(
                 "INSERT INTO verse_fts(text, normalized_text, poem_id, verse_order) VALUES (?, ?, ?, ?)",
@@ -151,13 +222,38 @@ def import_corpus(
             )
             verse_count += 1
 
+        if poem_count % commit_every == 0:
+            conn.commit()
+
         if progress_every > 0 and poem_count % progress_every == 0:
+            elapsed = max(time.monotonic() - started, 0.001)
+            rate = poem_count / elapsed
             print(
-                f"Imported {poem_count:,} poems / {verse_count:,} verses...",
+                f"Imported {poem_count:,}{target} poems / {verse_count:,} verses "
+                f"({rate:,.0f} poems/s)",
                 flush=True,
             )
 
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata(key, value) VALUES ('build_status', 'complete')"
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata(key, value) VALUES ('imported_poems', ?)",
+        (str(poem_count),),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata(key, value) VALUES ('imported_verses', ?)",
+        (str(verse_count),),
+    )
     conn.commit()
+
+    if expected_poems and poem_count != expected_poems:
+        print(
+            f"WARNING: manifest lists {expected_poems:,} poems but importer accepted "
+            f"{poem_count:,} poem files.",
+            flush=True,
+        )
+
     return {
         "poets": poet_count,
         "categories": category_count,
