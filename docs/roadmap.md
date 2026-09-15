@@ -31,26 +31,27 @@ Current validated VPS corpus: 240 poets, 2,292 categories, 135,319 poems, 3,088,
 ## Milestone 3 — Telegram and user experience
 
 ### Main menu
-- [ ] Bot skeleton
-- [ ] Inline keyboard navigation
-- [ ] Search button and conversational search flow
-- [ ] Hafez fortune button
-- [ ] Random poem / discovery button
-- [ ] Poet browser
-- [ ] Bookmarks and history
-- [ ] Help/about screen
+- [x] Bot skeleton
+- [x] Inline keyboard navigation
+- [x] Search button and conversational search flow
+- [x] Hafez fortune button
+- [ ] Random poem / discovery button backend
+- [ ] Poet browser backend
+- [ ] Bookmarks and history backend
+- [x] Help/about screen
 
 ### Search experience
-- [ ] Search result cards with poet, work, verse and match type
+- [x] Search result cards with poet, work, verse and match type
 - [ ] Next/previous pagination
 - [ ] Open full poem
 - [ ] Search within a selected poet
-- [ ] Clearly label approximate/fuzzy matches
+- [x] Clearly label approximate/fuzzy matches
+- [x] Keep fast exact/all search separate from slower fuzzy fallback
 
 ### Hafez fortune
-- [ ] Select a random Hafez ghazal from the local corpus
-- [ ] Return the complete ghazal, not only one verse
-- [ ] New fortune button
+- [x] Select a random Hafez ghazal from the local corpus
+- [x] Return the complete ghazal, not only one verse
+- [x] New fortune button
 - [ ] Save/share actions
 - [ ] Optional interpretation layer kept separate from the original text
 
