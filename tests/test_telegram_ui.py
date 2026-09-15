@@ -1,6 +1,7 @@
 from ganjoor_bot.telegram_bot import (
     _poet_keyboard,
     _poets_keyboard,
+    _search_results_keyboard,
     _works_keyboard,
     main_menu,
 )
@@ -25,6 +26,18 @@ def test_main_menu_contains_core_actions():
         "menu:bookmarks",
         "menu:help",
     } <= callbacks
+
+
+def test_search_results_are_clickable_poems():
+    markup = _search_results_keyboard(
+        [
+            {"poem_id": 221, "poet": "حافظ", "poem_title": "غزل شمارهٔ ۲۲۱"},
+            {"poem_id": 555, "poet": "سعدی", "poem_title": "غزل شمارهٔ ۱"},
+        ],
+        include_fuzzy=True,
+    )
+    callbacks = _callbacks(markup)
+    assert {"poem:221", "poem:555", "search:fuzzy", "menu:home"} <= callbacks
 
 
 def test_poets_keyboard_has_navigation_and_poet_actions():
