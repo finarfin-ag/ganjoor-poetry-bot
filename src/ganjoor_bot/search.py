@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+from difflib import SequenceMatcher
+from itertools import combinations
 from typing import Literal
 
 from .normalize import normalize_persian
@@ -27,14 +29,11 @@ def _spacing_variants(normalized: str) -> list[str]:
 
     variants: set[tuple[str, ...]] = {tuple(tokens)}
 
-    # Join explicit prefix + verb: "می کن" -> "میکن".
     for i in range(len(tokens) - 1):
         if tokens[i] in {"می", "نمی"}:
             joined = tokens[:i] + [tokens[i] + tokens[i + 1]] + tokens[i + 2 :]
             variants.add(tuple(joined))
 
-    # Split compact forms too, so a query typed as "میکن" can also match a
-    # corpus line written with a normal space as "می کن".
     for i, token in enumerate(tokens):
         if token.startswith("نمی") and len(token) > 3:
             split = tokens[:i] + ["نمی", token[3:]] + tokens[i + 1 :]
@@ -43,9 +42,12 @@ def _spacing_variants(normalized: str) -> list[str]:
             split = tokens[:i] + ["می", token[2:]] + tokens[i + 1 :]
             variants.add(tuple(split))
 
-    # Keep the user's directly normalized form first for stable ranking.
     ordered = [normalized]
-    ordered.extend(" ".join(parts) for parts in sorted(variants) if " ".join(parts) != normalized)
+    ordered.extend(
+        " ".join(parts)
+        for parts in sorted(variants)
+        if " ".join(parts) != normalized
+    )
     return ordered
 
 
@@ -58,7 +60,9 @@ def _mode_expression(normalized: str, mode: SearchMode) -> str:
         return ""
 
     operator = " AND " if mode == "all" else " OR "
-    return operator.join(f"normalized_text:{_fts_phrase(term)}" for term in terms)
+    return operator.join(
+        f"normalized_text:{_fts_phrase(term)}" for term in terms
+    )
 
 
 def _build_match_query(normalized: str, mode: SearchMode) -> str:
@@ -100,18 +104,15 @@ def search_verses(
     category_id: int | None = None,
     diversify: bool = True,
 ) -> list[sqlite3.Row]:
-    """Search normalized Persian verse text with optional filters.
+    """Search normalized primary text with optional filters.
 
     Modes:
     - ``exact``: the normalized query must appear as one phrase.
     - ``all``: every normalized term must appear, in any order.
     - ``any``: at least one normalized term must appear.
 
-    Common Persian ``می``/``نمی`` spacing variants are expanded at query time so
-    ``می کن``, ``می‌کن`` and ``میکن`` can match the same indexed text.
-
-    By default results are diversified so a single poem does not occupy several
-    top-result slots. Set ``diversify=False`` when every matching verse matters.
+    This searches only indexed primary text (verse/prose ``Text`` fields), not
+    AI-generated PoemSummary/CoupletSummary commentary.
     """
     if limit <= 0:
         return []
@@ -177,6 +178,210 @@ def search_verses(
             continue
         seen_poems.add(poem_id)
         selected.append(row)
+        if len(selected) >= limit:
+            break
+
+    return selected
+
+
+def _token_f1(left: str, right: str) -> float:
+    left_tokens = set(left.split())
+    right_tokens = set(right.split())
+    if not left_tokens or not right_tokens:
+        return 0.0
+    common = len(left_tokens & right_tokens)
+    if common == 0:
+        return 0.0
+    return (2.0 * common) / (len(left_tokens) + len(right_tokens))
+
+
+def _window_similarity(query: str, candidate: str) -> float:
+    """Compare a query with the best similarly-sized token window."""
+    q_tokens = query.split()
+    c_tokens = candidate.split()
+    if not q_tokens or not c_tokens:
+        return 0.0
+
+    if len(c_tokens) <= len(q_tokens) + 2:
+        return SequenceMatcher(None, query, candidate).ratio()
+
+    best = 0.0
+    low = max(1, len(q_tokens) - 2)
+    high = min(len(c_tokens), len(q_tokens) + 2)
+    for size in range(low, high + 1):
+        for start in range(0, len(c_tokens) - size + 1):
+            window = " ".join(c_tokens[start : start + size])
+            best = max(best, SequenceMatcher(None, query, window).ratio())
+    return best
+
+
+def _fuzzy_similarity(query: str, candidate: str) -> float:
+    """Return a 0..1 similarity score tolerant of spacing and partial recall."""
+    scores: list[float] = []
+    for variant in _spacing_variants(query) or [query]:
+        token_score = _token_f1(variant, candidate)
+        compact_score = SequenceMatcher(
+            None,
+            variant.replace(" ", ""),
+            candidate.replace(" ", ""),
+        ).ratio()
+        window_score = _window_similarity(variant, candidate)
+        scores.append(
+            0.30 * token_score
+            + 0.35 * compact_score
+            + 0.35 * window_score
+        )
+    return max(scores, default=0.0)
+
+
+def _candidate_pairs(normalized: str, max_pairs: int = 8) -> list[str]:
+    """Build a few AND-pair queries for fuzzy candidate discovery.
+
+    This helps when several remembered words differ from the source. Very common
+    Persian function words are excluded, while short content verbs such as
+    ``کن`` remain useful.
+    """
+    stopwords = {
+        "و", "در", "از", "به", "که", "را", "با", "بر", "برای", "تا",
+        "این", "آن", "یک", "من", "تو", "او", "ما", "شما", "ایشان",
+        "می", "نمی",
+    }
+    variants = _spacing_variants(normalized) or [normalized]
+    terms: list[str] = []
+    for variant in variants:
+        for term in variant.split():
+            if len(term) >= 2 and term not in stopwords and term not in terms:
+                terms.append(term)
+
+    if len(terms) < 2:
+        return []
+
+    pairs = list(combinations(terms[:6], 2))
+    pairs.sort(key=lambda pair: -(len(pair[0]) + len(pair[1])))
+    return [" ".join(pair) for pair in pairs[:max_pairs]]
+
+
+def smart_search(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int = 10,
+    *,
+    poet: int | str | None = None,
+    category_id: int | None = None,
+    fuzzy_threshold: float = 0.45,
+    candidate_limit: int = 500,
+) -> list[dict[str, object]]:
+    """Search primary text with exact -> all-words -> fuzzy fallback.
+
+    Each returned dictionary contains the normal search fields plus:
+    - ``match_type``: ``exact``, ``all`` or ``fuzzy``
+    - ``similarity``: 0..1 lexical similarity (exact is always 1.0)
+
+    Fuzzy matching is deliberately a fallback. FTS5 first narrows the corpus to
+    a few hundred candidates, then Python scores only those candidates. This
+    avoids scanning millions of rows and keeps approximate matches explainable.
+    """
+    if limit <= 0:
+        return []
+
+    normalized = normalize_persian(query)
+    if not normalized:
+        return []
+
+    candidates: dict[tuple[int, int], dict[str, object]] = {}
+
+    def add_rows(rows: list[sqlite3.Row], match_type: str) -> None:
+        for row in rows:
+            key = (int(row["poem_id"]), int(row["verse_order"]))
+            item = candidates.get(key)
+            if item is None:
+                item = dict(row)
+                item["match_type"] = match_type
+                item["similarity"] = (
+                    1.0
+                    if match_type == "exact"
+                    else _fuzzy_similarity(normalized, str(row["normalized_text"]))
+                )
+                candidates[key] = item
+            elif match_type == "exact":
+                item["match_type"] = "exact"
+                item["similarity"] = 1.0
+            elif match_type == "all" and item["match_type"] == "fuzzy":
+                item["match_type"] = "all"
+
+    exact_rows = search_verses(
+        conn,
+        query,
+        limit=max(limit * 4, 40),
+        mode="exact",
+        poet=poet,
+        category_id=category_id,
+        diversify=False,
+    )
+    add_rows(exact_rows, "exact")
+
+    all_rows = search_verses(
+        conn,
+        query,
+        limit=max(limit * 8, 80),
+        mode="all",
+        poet=poet,
+        category_id=category_id,
+        diversify=False,
+    )
+    add_rows(all_rows, "all")
+
+    any_rows = search_verses(
+        conn,
+        query,
+        limit=max(candidate_limit, limit * 20),
+        mode="any",
+        poet=poet,
+        category_id=category_id,
+        diversify=False,
+    )
+    add_rows(any_rows, "fuzzy")
+
+    # When the user's recollection has multiple changed words, broad OR ranking
+    # can miss the right line. A handful of content-word pairs gives FTS another
+    # cheap route to plausible candidates without scanning the entire corpus.
+    for pair_query in _candidate_pairs(normalized):
+        pair_rows = search_verses(
+            conn,
+            pair_query,
+            limit=80,
+            mode="all",
+            poet=poet,
+            category_id=category_id,
+            diversify=False,
+        )
+        add_rows(pair_rows, "fuzzy")
+
+    priority = {"exact": 0, "all": 1, "fuzzy": 2}
+    filtered = [
+        item
+        for item in candidates.values()
+        if item["match_type"] != "fuzzy"
+        or float(item["similarity"]) >= fuzzy_threshold
+    ]
+    filtered.sort(
+        key=lambda item: (
+            priority[str(item["match_type"])],
+            -float(item["similarity"]),
+            float(item.get("score") or 0.0),
+            int(item["poem_id"]),
+            int(item["verse_order"]),
+        )
+    )
+
+    selected: list[dict[str, object]] = []
+    seen_poems: set[int] = set()
+    for item in filtered:
+        poem_id = int(item["poem_id"])
+        if poem_id in seen_poems:
+            continue
+        seen_poems.add(poem_id)
+        selected.append(item)
         if len(selected) >= limit:
             break
 
