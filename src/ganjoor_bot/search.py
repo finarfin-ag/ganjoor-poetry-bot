@@ -13,7 +13,43 @@ def _fts_phrase(text: str) -> str:
     return f'"{escaped}"'
 
 
-def _build_match_query(normalized: str, mode: SearchMode) -> str:
+def _spacing_variants(normalized: str) -> list[str]:
+    """Return useful query variants for Persian spacing/half-spacing differences.
+
+    The corpus currently removes ZWNJ during normalization, so ``می‌کن`` becomes
+    ``میکن`` while a user may type ``می کن``. We generate both joined and split
+    forms for the productive verbal prefixes ``می`` and ``نمی`` without changing
+    the stored database or requiring a rebuild.
+    """
+    tokens = [part for part in normalized.split() if part]
+    if not tokens:
+        return []
+
+    variants: set[tuple[str, ...]] = {tuple(tokens)}
+
+    # Join explicit prefix + verb: "می کن" -> "میکن".
+    for i in range(len(tokens) - 1):
+        if tokens[i] in {"می", "نمی"}:
+            joined = tokens[:i] + [tokens[i] + tokens[i + 1]] + tokens[i + 2 :]
+            variants.add(tuple(joined))
+
+    # Split compact forms too, so a query typed as "میکن" can also match a
+    # corpus line written with a normal space as "می کن".
+    for i, token in enumerate(tokens):
+        if token.startswith("نمی") and len(token) > 3:
+            split = tokens[:i] + ["نمی", token[3:]] + tokens[i + 1 :]
+            variants.add(tuple(split))
+        elif token.startswith("می") and len(token) > 2:
+            split = tokens[:i] + ["می", token[2:]] + tokens[i + 1 :]
+            variants.add(tuple(split))
+
+    # Keep the user's directly normalized form first for stable ranking.
+    ordered = [normalized]
+    ordered.extend(" ".join(parts) for parts in sorted(variants) if " ".join(parts) != normalized)
+    return ordered
+
+
+def _mode_expression(normalized: str, mode: SearchMode) -> str:
     if mode == "exact":
         return f"normalized_text:{_fts_phrase(normalized)}"
 
@@ -22,9 +58,20 @@ def _build_match_query(normalized: str, mode: SearchMode) -> str:
         return ""
 
     operator = " AND " if mode == "all" else " OR "
-    return operator.join(
-        f"normalized_text:{_fts_phrase(term)}" for term in terms
-    )
+    return operator.join(f"normalized_text:{_fts_phrase(term)}" for term in terms)
+
+
+def _build_match_query(normalized: str, mode: SearchMode) -> str:
+    expressions = [
+        _mode_expression(variant, mode)
+        for variant in _spacing_variants(normalized)
+    ]
+    expressions = [expr for expr in expressions if expr]
+    if not expressions:
+        return ""
+    if len(expressions) == 1:
+        return expressions[0]
+    return " OR ".join(f"({expr})" for expr in expressions)
 
 
 def _resolve_poet_id(conn: sqlite3.Connection, poet: int | str | None) -> int | None:
@@ -59,6 +106,9 @@ def search_verses(
     - ``exact``: the normalized query must appear as one phrase.
     - ``all``: every normalized term must appear, in any order.
     - ``any``: at least one normalized term must appear.
+
+    Common Persian ``می``/``نمی`` spacing variants are expanded at query time so
+    ``می کن``, ``می‌کن`` and ``میکن`` can match the same indexed text.
 
     By default results are diversified so a single poem does not occupy several
     top-result slots. Set ``diversify=False`` when every matching verse matters.
