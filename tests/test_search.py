@@ -41,6 +41,24 @@ def test_search_matches_typing_variants(tmp_path: Path):
     assert rows[0]["poet"] == "حافظ"
 
 
+def test_search_matches_mi_spacing_variants(tmp_path: Path):
+    conn = connect(tmp_path / "test.sqlite")
+    initialize(conn)
+    _insert_verse(conn, 10, 1, "سعدی", "بوستان", 1, "تو نیکی می‌کن و در دجله انداز")
+    _insert_verse(conn, 11, 1, "سعدی", "بوستان ۲", 1, "من این کار را نمی‌کنم")
+    conn.commit()
+
+    for query in ("تو نیکی می کن و در دجله انداز", "تو نیکی می‌کن و در دجله انداز", "تو نیکی میکن و در دجله انداز"):
+        rows = search_verses(conn, query, mode="exact")
+        assert rows
+        assert rows[0]["poem_id"] == 10
+
+    for query in ("نمی کنم", "نمی‌کنم", "نمیکنم"):
+        rows = search_verses(conn, query, mode="exact")
+        assert rows
+        assert rows[0]["poem_id"] == 11
+
+
 def test_search_modes(tmp_path: Path):
     conn = connect(tmp_path / "test.sqlite")
     initialize(conn)
