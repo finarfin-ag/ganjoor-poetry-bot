@@ -37,14 +37,14 @@ Current validated VPS corpus: 240 poets, 2,292 categories, 135,319 poems, 3,088,
 - [x] Hafez fortune button
 - [ ] Random poem / discovery button backend
 - [x] Poet browser backend
-- [ ] Bookmarks and history backend
+- [x] Bookmarks backend
 - [x] Help/about screen
 
 ### Search experience
 - [x] Search result cards with poet, work, verse and match type
 - [ ] Search-result next/previous pagination
 - [x] Open full poem from the poet/work browser
-- [ ] Open full poem directly from search results
+- [x] Open full poem directly from search results
 - [ ] Search within a selected poet
 - [x] Clearly label approximate/fuzzy matches
 - [x] Keep fast exact/all search separate from slower fuzzy fallback
@@ -53,7 +53,7 @@ Current validated VPS corpus: 240 poets, 2,292 categories, 135,319 poems, 3,088,
 - [x] Select a random Hafez ghazal from the local corpus
 - [x] Return the complete ghazal, not only one verse
 - [x] New fortune button
-- [ ] Save/share actions
+- [x] Save/share actions
 - [ ] Optional interpretation layer kept separate from the original text
 
 ### Discovery and browsing
@@ -69,8 +69,12 @@ Current validated VPS corpus: 240 poets, 2,292 categories, 135,319 poems, 3,088,
 
 ## Milestone 4 — persistence and personal features
 
-- [ ] Telegram user table
-- [ ] Bookmarks
+- [x] Telegram user table
+- [x] Bookmarks
+- [x] User-defined bookmark collections
+- [x] Move bookmarks between collections
+- [x] Rename/delete bookmark collections
+- [x] Separate bot-state database from the poetry corpus
 - [ ] Search history
 - [ ] Recent fortunes
 - [ ] User preferences
