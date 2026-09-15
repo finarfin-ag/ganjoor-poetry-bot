@@ -2,7 +2,7 @@ from pathlib import Path
 
 from ganjoor_bot.db import connect, initialize
 from ganjoor_bot.normalize import normalize_persian
-from ganjoor_bot.search import search_verses
+from ganjoor_bot.search import search_verses, smart_search
 
 
 def _insert_verse(conn, poem_id: int, poet_id: int, poet: str, title: str, verse_order: int, text: str, category_id: int | None = None):
@@ -106,3 +106,31 @@ def test_search_diversifies_poems(tmp_path: Path):
 
     every_verse = search_verses(conn, "دوش دیدم", limit=2, diversify=False)
     assert len(every_verse) == 2
+
+
+def test_smart_search_handles_imperfect_recollection(tmp_path: Path):
+    conn = connect(tmp_path / "test.sqlite")
+    initialize(conn)
+    _insert_verse(conn, 10, 1, "حافظ", "غزل ۱", 1, "دل می‌رود ز دستم صاحبدلان خدا را")
+    _insert_verse(conn, 20, 2, "سعدی", "غزل ۲", 1, "دل از دست رفت و جان نیز همراه او")
+    conn.commit()
+
+    rows = smart_search(conn, "دل میره ز دستم صاحب دلان خدا را", limit=5)
+    assert rows
+    assert rows[0]["poem_id"] == 10
+    assert rows[0]["match_type"] == "fuzzy"
+    assert float(rows[0]["similarity"]) >= 0.45
+
+
+def test_smart_search_can_recover_changed_proverb_wording(tmp_path: Path):
+    conn = connect(tmp_path / "test.sqlite")
+    initialize(conn)
+    _insert_verse(conn, 10, 1, "حافظ", "غزل ۲۶۳", 1, "که گفته‌اند نکویی کن و در آب انداز")
+    _insert_verse(conn, 20, 2, "سعدی", "نمونه", 1, "نیکی بسیار کن که جهان پایدار نیست")
+    conn.commit()
+
+    rows = smart_search(conn, "تو نیکی می کن و در دجله انداز", limit=5)
+    assert rows
+    assert rows[0]["poem_id"] == 10
+    assert rows[0]["match_type"] == "fuzzy"
+    assert float(rows[0]["similarity"]) >= 0.45
