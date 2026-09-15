@@ -14,6 +14,17 @@ from telegram.ext import (
     filters,
 )
 
+from .browse import (
+    format_poem,
+    get_category,
+    get_poem,
+    get_poet,
+    list_category_children,
+    list_poems_by_poet,
+    list_poems_in_category,
+    list_poets,
+    list_root_categories,
+)
 from .db import connect
 from .fortune import format_fortune_text, get_hafez_fortune
 from .search import search_verses, smart_search
@@ -22,6 +33,8 @@ from .search import search_verses, smart_search
 DB_ENV = "POETRY_DB"
 TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
 DEFAULT_DB = Path("data/poetry.sqlite")
+POETS_PAGE_SIZE = 12
+WORKS_PAGE_SIZE = 10
 
 
 def main_menu() -> InlineKeyboardMarkup:
@@ -86,6 +99,71 @@ def _fortune_text() -> str:
         conn.close()
 
 
+def _poets_page(page: int) -> dict[str, object]:
+    conn = _open_db()
+    try:
+        return list_poets(conn, page=page, page_size=POETS_PAGE_SIZE)
+    finally:
+        conn.close()
+
+
+def _poet_screen(poet_id: int) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
+    conn = _open_db()
+    try:
+        return get_poet(conn, poet_id), list_root_categories(conn, poet_id)
+    finally:
+        conn.close()
+
+
+def _category_screen(category_id: int) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
+    conn = _open_db()
+    try:
+        return get_category(conn, category_id), list_category_children(conn, category_id)
+    finally:
+        conn.close()
+
+
+def _category_works(category_id: int, page: int) -> dict[str, object]:
+    conn = _open_db()
+    try:
+        return list_poems_in_category(
+            conn,
+            category_id,
+            page=page,
+            page_size=WORKS_PAGE_SIZE,
+        )
+    finally:
+        conn.close()
+
+
+def _poet_works(poet_id: int, page: int) -> dict[str, object]:
+    conn = _open_db()
+    try:
+        return list_poems_by_poet(
+            conn,
+            poet_id,
+            page=page,
+            page_size=WORKS_PAGE_SIZE,
+        )
+    finally:
+        conn.close()
+
+
+def _full_poem(poem_id: int) -> dict[str, object] | None:
+    conn = _open_db()
+    try:
+        return get_poem(conn, poem_id)
+    finally:
+        conn.close()
+
+
+def _short_label(text: object, max_chars: int = 44) -> str:
+    value = " ".join(str(text or "").split())
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 1] + "…"
+
+
 def _format_results(rows: list[dict[str, object]], *, approximate: bool = False) -> str:
     if not rows:
         return "نتیجه‌ای پیدا نشد."
@@ -102,6 +180,132 @@ def _format_results(rows: list[dict[str, object]], *, approximate: bool = False)
             score_text = f" — شباهت {float(similarity):.0%}"
         blocks.append(f"{index}. {prefix}{poet} — {title}{score_text}\n{text}")
     return "\n\n".join(blocks)
+
+
+def _poets_keyboard(page_data: dict[str, object]) -> InlineKeyboardMarkup:
+    items = list(page_data.get("items") or [])
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in items:
+        name = _short_label(item.get("nickname") or item.get("name") or "شاعر", 28)
+        count = int(item.get("poem_count") or 0)
+        rows.append(
+            [InlineKeyboardButton(f"{name} · {count} اثر", callback_data=f"poet:{int(item['id'])}")]
+        )
+
+    nav: list[InlineKeyboardButton] = []
+    page = int(page_data.get("page") or 0)
+    if page_data.get("has_prev"):
+        nav.append(InlineKeyboardButton("◀️ قبلی", callback_data=f"poets:{page - 1}"))
+    nav.append(
+        InlineKeyboardButton(
+            f"{page + 1}/{int(page_data.get('pages') or 1)}",
+            callback_data="noop",
+        )
+    )
+    if page_data.get("has_next"):
+        nav.append(InlineKeyboardButton("بعدی ▶️", callback_data=f"poets:{page + 1}"))
+    rows.append(nav)
+    rows.append([InlineKeyboardButton("🏠 منوی اصلی", callback_data="menu:home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _poet_keyboard(poet: dict[str, object], roots: list[dict[str, object]]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for category in roots:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"📂 {_short_label(category.get('title'), 42)}",
+                    callback_data=f"cat:{int(category['id'])}",
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                f"📜 همهٔ آثار ({int(poet.get('poem_count') or 0)})",
+                callback_data=f"pworks:{int(poet['id'])}:0",
+            )
+        ]
+    )
+    rows.append([InlineKeyboardButton("⬅️ فهرست شاعران", callback_data="poets:0")])
+    rows.append([InlineKeyboardButton("🏠 منوی اصلی", callback_data="menu:home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _category_keyboard(
+    category: dict[str, object],
+    children: list[dict[str, object]],
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for child in children:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"📂 {_short_label(child.get('title'), 42)}",
+                    callback_data=f"cat:{int(child['id'])}",
+                )
+            ]
+        )
+
+    direct_count = int(category.get("direct_poem_count") or 0)
+    if direct_count:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"📜 آثار این بخش ({direct_count})",
+                    callback_data=f"cworks:{int(category['id'])}:0",
+                )
+            ]
+        )
+
+    parent_id = category.get("parent_id")
+    if parent_id is not None:
+        rows.append([InlineKeyboardButton("⬅️ بازگشت", callback_data=f"cat:{int(parent_id)}")])
+    else:
+        rows.append([InlineKeyboardButton("⬅️ شاعر", callback_data=f"poet:{int(category['poet_id'])}")])
+    rows.append([InlineKeyboardButton("🏠 منوی اصلی", callback_data="menu:home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _works_keyboard(
+    page_data: dict[str, object],
+    *,
+    category_id: int | None = None,
+    poet_id: int | None = None,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in list(page_data.get("items") or []):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"📄 {_short_label(item.get('title') or f'اثر {item[\"id\"]}', 43)}",
+                    callback_data=f"poem:{int(item['id'])}",
+                )
+            ]
+        )
+
+    page = int(page_data.get("page") or 0)
+    nav: list[InlineKeyboardButton] = []
+    prefix = f"cworks:{category_id}" if category_id is not None else f"pworks:{poet_id}"
+    if page_data.get("has_prev"):
+        nav.append(InlineKeyboardButton("◀️ قبلی", callback_data=f"{prefix}:{page - 1}"))
+    nav.append(
+        InlineKeyboardButton(
+            f"{page + 1}/{int(page_data.get('pages') or 1)}",
+            callback_data="noop",
+        )
+    )
+    if page_data.get("has_next"):
+        nav.append(InlineKeyboardButton("بعدی ▶️", callback_data=f"{prefix}:{page + 1}"))
+    rows.append(nav)
+
+    if category_id is not None:
+        rows.append([InlineKeyboardButton("⬅️ بازگشت به مجموعه", callback_data=f"cat:{category_id}")])
+    elif poet_id is not None:
+        rows.append([InlineKeyboardButton("⬅️ بازگشت به شاعر", callback_data=f"poet:{poet_id}")])
+    rows.append([InlineKeyboardButton("🏠 منوی اصلی", callback_data="menu:home")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def _send_long(update_or_message, text: str, reply_markup=None) -> None:
@@ -142,6 +346,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text(
         "می‌توانید بخشی از یک شعر را بفرستید تا در متن اصلی آثار جست‌وجو شود.\n\n"
         "فال حافظ یک غزل کامل و تصادفی از متن محلی گنجور برمی‌گرداند.\n"
+        "از بخش شاعران می‌توانید شاعر، مجموعه، زیرمجموعه و متن کامل آثار را مرور کنید.\n"
         "نتایج تقریبی با علامت ≈ مشخص می‌شوند و از متن اصلی جدا از توضیحات هوش مصنوعی جست‌وجو می‌شوند.",
         reply_markup=main_menu(),
     )
@@ -156,6 +361,14 @@ async def fortune_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ]
     )
     await _send_long(update.effective_message, text, reply_markup=keyboard)
+
+
+async def poets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    page_data = await asyncio.to_thread(_poets_page, 0)
+    await update.effective_message.reply_text(
+        f"📚 شاعران — {int(page_data.get('total') or 0)} شاعر\nیک شاعر را انتخاب کنید:",
+        reply_markup=_poets_keyboard(page_data),
+    )
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -208,7 +421,6 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     text = (update.effective_message.text or "").strip()
     if not text:
         return
-    # Plain text is useful as a search shortcut even if the user did not tap Search.
     await _handle_search_text(update, context, text)
 
 
@@ -216,6 +428,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     data = query.data or ""
+
+    if data == "noop":
+        return
 
     if data == "menu:home":
         context.user_data["awaiting_search"] = False
@@ -238,6 +453,102 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _send_long(query.message, text, reply_markup=keyboard)
         return
 
+    if data == "menu:poets":
+        page_data = await asyncio.to_thread(_poets_page, 0)
+        await query.message.reply_text(
+            f"📚 شاعران — {int(page_data.get('total') or 0)} شاعر\nیک شاعر را انتخاب کنید:",
+            reply_markup=_poets_keyboard(page_data),
+        )
+        return
+
+    if data.startswith("poets:"):
+        page = int(data.split(":", 1)[1])
+        page_data = await asyncio.to_thread(_poets_page, page)
+        await query.message.reply_text(
+            f"📚 شاعران — صفحه {int(page_data['page']) + 1} از {int(page_data['pages'])}",
+            reply_markup=_poets_keyboard(page_data),
+        )
+        return
+
+    if data.startswith("poet:"):
+        poet_id = int(data.split(":", 1)[1])
+        poet, roots = await asyncio.to_thread(_poet_screen, poet_id)
+        if not poet:
+            await query.message.reply_text("شاعر پیدا نشد.", reply_markup=main_menu())
+            return
+        name = poet.get("nickname") or poet.get("name") or "شاعر"
+        description = " ".join(str(poet.get("description") or "").split())
+        if len(description) > 900:
+            description = description[:899] + "…"
+        text = f"📚 {name}\nتعداد آثار: {int(poet.get('poem_count') or 0)}"
+        if description:
+            text += f"\n\n{description}"
+        await query.message.reply_text(text, reply_markup=_poet_keyboard(poet, roots))
+        return
+
+    if data.startswith("cat:"):
+        category_id = int(data.split(":", 1)[1])
+        category, children = await asyncio.to_thread(_category_screen, category_id)
+        if not category:
+            await query.message.reply_text("این مجموعه پیدا نشد.", reply_markup=main_menu())
+            return
+        details: list[str] = [f"📂 {category.get('title') or 'مجموعه'}"]
+        child_count = int(category.get("child_count") or 0)
+        direct_count = int(category.get("direct_poem_count") or 0)
+        if child_count:
+            details.append(f"زیرمجموعه‌ها: {child_count}")
+        if direct_count:
+            details.append(f"آثار مستقیم: {direct_count}")
+        await query.message.reply_text(
+            "\n".join(details),
+            reply_markup=_category_keyboard(category, children),
+        )
+        return
+
+    if data.startswith("cworks:"):
+        _, category_text, page_text = data.split(":", 2)
+        category_id = int(category_text)
+        page_data = await asyncio.to_thread(_category_works, category_id, int(page_text))
+        category, _ = await asyncio.to_thread(_category_screen, category_id)
+        title = (category or {}).get("title") or "آثار"
+        await query.message.reply_text(
+            f"📜 {title}\nصفحه {int(page_data['page']) + 1} از {int(page_data['pages'])}",
+            reply_markup=_works_keyboard(page_data, category_id=category_id),
+        )
+        return
+
+    if data.startswith("pworks:"):
+        _, poet_text, page_text = data.split(":", 2)
+        poet_id = int(poet_text)
+        page_data = await asyncio.to_thread(_poet_works, poet_id, int(page_text))
+        poet, _ = await asyncio.to_thread(_poet_screen, poet_id)
+        name = (poet or {}).get("nickname") or (poet or {}).get("name") or "شاعر"
+        await query.message.reply_text(
+            f"📜 همهٔ آثار {name}\nصفحه {int(page_data['page']) + 1} از {int(page_data['pages'])}",
+            reply_markup=_works_keyboard(page_data, poet_id=poet_id),
+        )
+        return
+
+    if data.startswith("poem:"):
+        poem_id = int(data.split(":", 1)[1])
+        poem = await asyncio.to_thread(_full_poem, poem_id)
+        if not poem:
+            await query.message.reply_text("اثر پیدا نشد.", reply_markup=main_menu())
+            return
+        rows: list[list[InlineKeyboardButton]] = []
+        category_id = poem.get("category_id")
+        if category_id is not None:
+            rows.append([InlineKeyboardButton("⬅️ بازگشت به مجموعه", callback_data=f"cat:{int(category_id)}")])
+        else:
+            rows.append([InlineKeyboardButton("⬅️ بازگشت به شاعر", callback_data=f"poet:{int(poem['poet_id'])}")])
+        rows.append([InlineKeyboardButton("🏠 منوی اصلی", callback_data="menu:home")])
+        await _send_long(
+            query.message,
+            format_poem(poem),
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+        return
+
     if data == "search:fuzzy":
         last_query = str(context.user_data.get("last_query") or "").strip()
         if not last_query:
@@ -250,7 +561,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    if data in {"menu:random", "menu:poets", "menu:bookmarks"}:
+    if data in {"menu:random", "menu:bookmarks"}:
         await query.message.reply_text(
             "این بخش در مرحلهٔ بعدی رابط کاربری فعال می‌شود.",
             reply_markup=main_menu(),
@@ -261,6 +572,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.message.reply_text(
             "🔎 جست‌وجو: بخشی از شعر را بفرستید.\n"
             "🔮 فال حافظ: یک غزل کامل و تصادفی از حافظ.\n"
+            "📚 شاعران: مرور شاعر، مجموعه‌ها و متن کامل آثار.\n"
             "≈ جست‌وجوی تقریبی: برای بیت ناقص یا اشتباه‌تایپ‌شده.",
             reply_markup=main_menu(),
         )
@@ -273,6 +585,7 @@ def build_application(token: str) -> Application:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("fal", fortune_command))
     app.add_handler(CommandHandler("fortune", fortune_command))
+    app.add_handler(CommandHandler("poets", poets_command))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CallbackQueryHandler(callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message))
