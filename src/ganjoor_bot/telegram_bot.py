@@ -276,10 +276,12 @@ def _works_keyboard(
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for item in list(page_data.get("items") or []):
+        fallback_title = f"اثر {int(item['id'])}"
+        title = item.get("title") or fallback_title
         rows.append(
             [
                 InlineKeyboardButton(
-                    f"📄 {_short_label(item.get('title') or f'اثر {item[\"id\"]}', 43)}",
+                    f"📄 {_short_label(title, 43)}",
                     callback_data=f"poem:{int(item['id'])}",
                 )
             ]
