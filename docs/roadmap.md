@@ -36,14 +36,15 @@ Current validated VPS corpus: 240 poets, 2,292 categories, 135,319 poems, 3,088,
 - [x] Search button and conversational search flow
 - [x] Hafez fortune button
 - [ ] Random poem / discovery button backend
-- [ ] Poet browser backend
+- [x] Poet browser backend
 - [ ] Bookmarks and history backend
 - [x] Help/about screen
 
 ### Search experience
 - [x] Search result cards with poet, work, verse and match type
-- [ ] Next/previous pagination
-- [ ] Open full poem
+- [ ] Search-result next/previous pagination
+- [x] Open full poem from the poet/work browser
+- [ ] Open full poem directly from search results
 - [ ] Search within a selected poet
 - [x] Clearly label approximate/fuzzy matches
 - [x] Keep fast exact/all search separate from slower fuzzy fallback
@@ -55,10 +56,15 @@ Current validated VPS corpus: 240 poets, 2,292 categories, 135,319 poems, 3,088,
 - [ ] Save/share actions
 - [ ] Optional interpretation layer kept separate from the original text
 
-### Discovery
+### Discovery and browsing
 - [ ] Random poem
 - [ ] Random verse
-- [ ] Browse poets and collections
+- [x] Browse paginated poet list
+- [x] Show poem count per poet
+- [x] Browse category/subcategory tree
+- [x] Browse paginated works in a category
+- [x] Browse all works by poet
+- [x] Open complete original text of an individual work
 - [ ] Browse by metre/rhyme later
 
 ## Milestone 4 — persistence and personal features
