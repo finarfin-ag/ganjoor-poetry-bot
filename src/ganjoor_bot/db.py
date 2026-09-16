@@ -20,8 +20,8 @@ def connect(path: str | Path) -> sqlite3.Connection:
     import-oriented tuning are useful. In production the Telegram service runs as
     an unprivileged user and only reads the finished corpus. SQLite pragmas such as
     ``journal_mode`` and even ``cache_size`` can attempt writes, so a deployed
-    read-only corpus must be opened with SQLite's URI ``mode=ro`` rather than by
-    opening normally and trying to convert the connection afterwards.
+    read-only corpus is opened as ``mode=ro&immutable=1``. This prevents SQLite
+    from trying to create journal/WAL/SHM files next to the static corpus.
     """
     db_path = Path(path)
 
@@ -33,7 +33,7 @@ def connect(path: str | Path) -> sqlite3.Connection:
     )
 
     if is_existing_readonly:
-        uri = db_path.resolve().as_uri() + "?mode=ro"
+        uri = db_path.resolve().as_uri() + "?mode=ro&immutable=1"
         conn = _configure_common(sqlite3.connect(uri, uri=True))
         conn.execute("PRAGMA query_only = ON")
         return conn
